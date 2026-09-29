@@ -1,0 +1,4 @@
+.env
+attendance.log
+__pycache__/
+.state.json
