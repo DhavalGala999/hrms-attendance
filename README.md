@@ -40,6 +40,8 @@ cd $HOME\hrms-attendance
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
+On Windows, use **PowerShell**, not WSL or Git Bash, and keep the folder on the Windows side (e.g. `C:\Users\<you>\hrms-attendance`), not inside WSL. `install.sh` is for macOS only. Python must be installed on Windows itself; Python inside WSL doesn't count.
+
 The installer asks for:
 
 1. **HRMS address**: the site you log in to, e.g. `https://hrms.yourcompany.com`
