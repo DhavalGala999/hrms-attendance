@@ -4,6 +4,17 @@
 #   ./install.sh --uninstall  stop the daily job
 set -euo pipefail
 
+# This installer uses macOS-only tools (Keychain, launchd). Stop early anywhere else.
+if [ "$(uname -s)" != "Darwin" ]; then
+    echo "install.sh is for macOS only."
+    echo
+    echo "On Windows (including WSL and Git Bash), use the Windows installer from PowerShell:"
+    echo "  1. Put this folder on the Windows side (e.g. C:\\Users\\<you>\\hrms-attendance), not inside WSL."
+    echo "  2. Open PowerShell in that folder and run:"
+    echo "       powershell -ExecutionPolicy Bypass -File install.ps1"
+    exit 1
+fi
+
 DIR="$(cd "$(dirname "$0")" && pwd)"
 ENV_FILE="$DIR/.env"
 LABEL="local.hrms-attendance"
