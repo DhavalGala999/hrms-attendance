@@ -25,6 +25,7 @@ import html
 import json
 import os
 import re
+import signal
 import socket
 import subprocess
 import sys
@@ -102,6 +103,18 @@ OUT_TIME = parse_time("OUT_TIME", "19:30")
 NOTIFY = os.environ.get("NOTIFY", "true").lower() == "true"
 
 
+def parse_minutes(name: str, default: str) -> int:
+    value = os.environ.get(name, "").strip() or default
+    if not value.isdigit():
+        sys.exit(f"config error: {name}='{value}' — use a whole number of minutes, e.g. 15 (0 = remind once a day)")
+    return int(value)
+
+
+# While HRMS keeps refusing today's request, show the failure popup again this often
+# (checked on each scheduled run, so the real minimum is the 15-minute schedule). 0 = once a day.
+REMIND_MINUTES = parse_minutes("REMIND_MINUTES", "15")
+
+
 class HRMSError(Exception):
     """str(e) is the human-readable message (shown in the popup); `detail` is the
     technical context (request, HTTP status) that only goes to the log."""
@@ -109,6 +122,10 @@ class HRMSError(Exception):
     def __init__(self, message: str, detail: str = ""):
         super().__init__(message)
         self.detail = detail
+
+
+class ConnectionFailed(HRMSError):
+    """HRMS couldn't be reached at all — nothing the user can fix in HRMS."""
 
 
 def plain_text(value: str) -> str:
@@ -143,7 +160,7 @@ def api(method: str, path: str, params: dict | None = None, body: dict | None = 
     except urllib.error.HTTPError as e:
         raise HRMSError(frappe_error(e.read()), f"{method} {path} -> HTTP {e.code}") from None
     except urllib.error.URLError as e:
-        raise HRMSError(f"Could not connect to HRMS ({e.reason})", f"{method} {path}") from None
+        raise ConnectionFailed(f"Could not connect to HRMS ({e.reason})", f"{method} {path}") from None
 
 
 def frappe_error(raw: bytes) -> str:
@@ -307,7 +324,7 @@ def wait_for_network(timeout: int = 600, interval: int = 15) -> None:
 
 
 # Per-day state for scheduled runs: once today is handled, later runs exit without
-# contacting HRMS, and each distinct failure pops up only once a day.
+# contacting HRMS; it also remembers which failures were shown and the last failure popup.
 STATE_FILE = HERE / ".state.json"
 
 
@@ -328,18 +345,19 @@ def save_state(state: dict) -> None:
         log(f"warning: could not save {STATE_FILE.name}: {e}")
 
 
-def popup(title: str, body: str, url: str, error: bool = False) -> None:
+def popup(title: str, body: str, url: str, error: bool = False) -> int | None:
     """Popup with an "Open in HRMS" button. Unlike notifications, it can't be silently
     hidden by notification settings / Focus; it stays until dismissed (max 8h).
-    Runs as a separate process so this script (and the scheduler's next run) isn't blocked."""
+    Runs as a separate process so this script (and the scheduler's next run) isn't blocked;
+    returns that process's id."""
     if sys.platform == "darwin":
         show = (f"set r to display alert {json.dumps(title)} message {json.dumps(body)}"
                 f"{' as critical' if error else ''} buttons {{\"OK\", \"Open in HRMS\"}} "
                 f"default button \"Open in HRMS\" giving up after 28800")
         open_url = f"if button returned of r is \"Open in HRMS\" then open location {json.dumps(url)}"
-        subprocess.Popen(["osascript", "-e", show, "-e", open_url], start_new_session=True,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    elif sys.platform == "win32":
+        return subprocess.Popen(["osascript", "-e", show, "-e", open_url], start_new_session=True,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).pid
+    if sys.platform == "win32":
         icon = 0x10 if error else 0x40  # error / information
         code = (
             "import ctypes, webbrowser\n"
@@ -348,8 +366,58 @@ def popup(title: str, body: str, url: str, error: bool = False) -> None:
             f"{0x4 | icon | 0x40000}) == 6:\n"
             f"    webbrowser.open({url!r})\n"
         )
-        subprocess.Popen([sys.executable, "-c", code],
-                         creationflags=0x00000008 | 0x00000200)  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        return subprocess.Popen([sys.executable, "-c", code],
+                                creationflags=0x00000008 | 0x00000200).pid  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    return None
+
+
+NO_WINDOW = 0x08000000  # Windows CREATE_NO_WINDOW: don't flash a console for helper commands
+
+
+def popup_open(pid: int | None) -> bool:
+    """Is the popup process we started earlier still on screen? (Also checks the process
+    name, so a recycled pid belonging to something else doesn't count.)"""
+    if not pid:
+        return False
+    try:
+        if sys.platform == "win32":
+            out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                                 capture_output=True, text=True, creationflags=NO_WINDOW).stdout
+            return "python" in out.lower()
+        out = subprocess.run(["ps", "-p", str(pid), "-o", "comm="], capture_output=True, text=True).stdout
+        return "osascript" in out
+    except OSError:
+        return False
+
+
+def close_popup(pid: int | None) -> None:
+    """Dismiss a failure popup that is still open (used once the draft is created)."""
+    if not popup_open(pid):
+        return
+    try:
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, creationflags=NO_WINDOW)
+        else:
+            os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
+
+
+def should_alert(state: dict, message: str, repeat: bool) -> bool:
+    """Scheduled runs: show this failure now? New problems always; a repeat only if the
+    last popup was dismissed and REMIND_MINUTES have passed."""
+    if message not in state["alerted"]:
+        return True
+    if not repeat or REMIND_MINUTES == 0:
+        return False
+    last = state.get("popup") or {}
+    if popup_open(last.get("pid")):
+        return False  # still on screen; don't stack another one
+    try:
+        elapsed = (dt.datetime.now() - dt.datetime.fromisoformat(last["at"])).total_seconds() / 60
+    except (KeyError, ValueError):
+        return True
+    return elapsed >= max(REMIND_MINUTES - 2, 0)  # 2 min slack: runs aren't exactly 15:00 apart
 
 
 def notify_success(doc: dict) -> None:
@@ -360,12 +428,17 @@ def notify_success(doc: dict) -> None:
               f"{BASE_URL}/app/attendance-request/{doc['name']}")
 
 
-def alert_failure(msg: str, retrying: bool = False) -> None:
-    next_step = ("It will retry automatically every 15 minutes once you fix this."
-                 if retrying else "Fix the issue and run attendance.py again, or fill it in HRMS.")
-    popup("Attendance Request FAILED",
-          f"{msg}\n\nToday's draft was NOT created. {next_step}",
-          f"{BASE_URL}/app/attendance-request", error=True)
+def alert_failure(msg: str, retrying: bool = False, reminding: bool = False) -> int | None:
+    if not retrying:
+        next_step = "Fix the issue and run attendance.py again, or fill it in HRMS."
+    elif reminding:
+        next_step = ("It retries automatically every 15 minutes, and this reminder "
+                     "comes back until the draft is created.")
+    else:
+        next_step = "It will retry automatically every 15 minutes."
+    return popup("Attendance Request FAILED",
+                 f"{msg}\n\nToday's draft was NOT created. {next_step}",
+                 f"{BASE_URL}/app/attendance-request", error=True)
 
 
 def main() -> int:
@@ -374,7 +447,8 @@ def main() -> int:
     ap.add_argument("--force", action="store_true", help="skip the weekend/holiday check")
     ap.add_argument("--log", help="append output to this file (used by the Windows scheduled task)")
     ap.add_argument("--scheduled", action="store_true",
-                    help="used by the scheduler: stop once today is done, retry quietly, pop up each failure once a day")
+                    help="used by the scheduler: stop once today is done, keep retrying, "
+                         "repeat the failure popup every REMIND_MINUTES")
     args = ap.parse_args()
     if args.log:  # pythonw.exe has no console, so write straight to the file
         sys.stdout = sys.stderr = open(args.log, "a", encoding="utf-8")
@@ -424,6 +498,7 @@ def main() -> int:
 
         doc = create_request(emp, today)
         finish(f"created draft {doc['name']} ({doc['reason']})")
+        close_popup((state.get("popup") or {}).get("pid"))  # a stale "FAILED" popup, if still open
         notify_success(doc)
         return 0
     except NetworkNotReady as e:
@@ -434,12 +509,18 @@ def main() -> int:
     except HRMSError as e:
         log(f"error: {e.detail + ': ' if e.detail else ''}{e}")
         message = str(e)[:300]
-        if args.scheduled and message in state["alerted"]:
-            return 1  # already shown today; keep retrying quietly
-        if args.scheduled:
-            state["alerted"].append(message)
+        if not args.scheduled:
+            alert_failure(message)
+            return 1
+        # HRMS refusals (timesheet missing, wrong password...) are for the user to fix, so the
+        # popup repeats; connection failures aren't, so those show once a day.
+        repeat = not isinstance(e, ConnectionFailed)
+        if should_alert(state, message, repeat):
+            pid = alert_failure(message, retrying=True, reminding=repeat and REMIND_MINUTES > 0)
+            if message not in state["alerted"]:
+                state["alerted"].append(message)
+            state["popup"] = {"pid": pid, "at": dt.datetime.now().isoformat(timespec="seconds")}
             save_state(state)
-        alert_failure(message, retrying=args.scheduled)
         return 1
 
 

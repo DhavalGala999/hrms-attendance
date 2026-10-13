@@ -98,18 +98,23 @@ if [[ "$yn" =~ ^[Yy] ]]; then
 fi
 
 # --- .env (keeps optional values from a previous install) ---
+# Read the old values first: "cat > file" empties the file before the lines below are filled in.
+KEY_CUR="$(current HRMS_API_KEY)"; SECRET_CUR="$(current HRMS_API_SECRET)"
+EXPLANATION_CUR="$(current ATTENDANCE_EXPLANATION)"
+NOTIFY_CUR="$(current NOTIFY)"; REMIND_CUR="$(current REMIND_MINUTES)"
 cat > "$ENV_FILE" <<EOF
 # Written by install.sh — re-run it to change these, or edit by hand.
 HRMS_URL=$HRMS_URL
-HRMS_API_KEY=$(current HRMS_API_KEY)
-HRMS_API_SECRET=$(current HRMS_API_SECRET)
+HRMS_API_KEY=$KEY_CUR
+HRMS_API_SECRET=$SECRET_CUR
 HRMS_USER=$EMAIL
 WORK_DAYS=$WORK_DAYS
 OFFICE_DAYS=$OFFICE_DAYS
 IN_TIME=$IN_TIME
 OUT_TIME=$OUT_TIME
-ATTENDANCE_EXPLANATION=$(current ATTENDANCE_EXPLANATION)
-NOTIFY=true
+ATTENDANCE_EXPLANATION=$EXPLANATION_CUR
+NOTIFY=${NOTIFY_CUR:-true}
+REMIND_MINUTES=${REMIND_CUR:-15}
 EOF
 chmod 600 "$ENV_FILE"
 
