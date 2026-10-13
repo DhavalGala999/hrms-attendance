@@ -108,6 +108,8 @@ if ($replace -match '^[Yy]') {
 }
 
 # --- .env (keeps optional values from a previous install); written without a BOM ---
+$notify = Current "NOTIFY";         if (-not $notify) { $notify = "true" }
+$remind = Current "REMIND_MINUTES"; if (-not $remind) { $remind = "15" }
 $lines = @(
     "# Written by install.ps1 - re-run it to change these, or edit by hand.",
     "HRMS_URL=$Url",
@@ -119,7 +121,8 @@ $lines = @(
     "IN_TIME=$InTime",
     "OUT_TIME=$OutTime",
     "ATTENDANCE_EXPLANATION=$(Current 'ATTENDANCE_EXPLANATION')",
-    "NOTIFY=true"
+    "NOTIFY=$notify",
+    "REMIND_MINUTES=$remind"
 )
 [IO.File]::WriteAllLines($EnvFile, $lines)
 

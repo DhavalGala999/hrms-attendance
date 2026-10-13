@@ -57,7 +57,8 @@ It then tests your login without creating anything, and sets up the automatic jo
 
 - **As soon as you're up and online:** at login and on wake, and then every 15 minutes. It waits up to 5 minutes for Wi-Fi after the laptop wakes.
 - **Once a day:** after today's draft is created, or today is a holiday, leave day or already filed, later runs exit without contacting HRMS.
-- **Automatic retries:** if HRMS refuses, you get **one** popup. Your company may have its own rules, for example requiring the previous day's timesheet first. It keeps retrying every 15 minutes, so once you fix the problem, the draft is created within 15 minutes.
+- **Automatic retries:** if HRMS refuses, it keeps retrying every 15 minutes, so once you fix the problem, the draft is created within 15 minutes. Your company may have its own rules, for example requiring the previous day's timesheet first.
+- **Reminders until it's fixed:** while HRMS keeps refusing, the failure popup comes back at each check after you dismiss it. Only one is ever on screen, and it closes by itself once the draft is created. Set `REMIND_MINUTES` in `.env` to space the reminders out (e.g. `60`), or to `0` for one popup a day. Connection problems are shown once a day, since there's nothing for you to fix.
 - **Popups:**
   - **Success:** says the draft was created, with an **Open in HRMS** button to review and submit it.
   - **Failure:** explains what went wrong.
