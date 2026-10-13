@@ -13,25 +13,31 @@ Each draft is filled with:
 
 No draft is created on weekends, company holidays, days you are on leave, or days that already have an Attendance Request or Attendance.
 
-Your password is saved in the macOS Keychain or Windows Credential Manager. It is never written to a file.
+Your password is saved in the macOS Keychain, Windows Credential Manager or the Ubuntu desktop keyring. It is never written to a file.
+
+Works on **macOS**, **Windows** and **Ubuntu** (the normal desktop, 22.04 or newer).
 
 ## Requirements
 
 - Python 3.9 or newer
   - **macOS:** the built-in `python3` works. If macOS asks, install the Command Line Tools.
   - **Windows:** install Python from [python.org](https://www.python.org/downloads/) and tick **"Add python.exe to PATH"**.
+  - **Ubuntu:** already installed.
+- **Ubuntu only:** two small standard packages, `libsecret-tools` and `zenity`. The installer tells you the one command to run if either is missing.
 - Your HRMS address, email and password. If you sign in with Google, set an HRMS password first.
 
 ## Install
 
 Put this folder somewhere permanent, such as your home folder, because the daily job runs from wherever the folder is. Then run the installer for your system.
 
-**macOS** (Terminal):
+**macOS and Ubuntu** (Terminal):
 
 ```bash
 cd ~/hrms-attendance
 ./install.sh
 ```
+
+On Ubuntu, run it from a terminal inside your normal desktop session, not over SSH.
 
 **Windows** (PowerShell):
 
@@ -40,7 +46,7 @@ cd $HOME\hrms-attendance
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-On Windows, use **PowerShell**, not WSL or Git Bash, and keep the folder on the Windows side (e.g. `C:\Users\<you>\hrms-attendance`), not inside WSL. `install.sh` is for macOS only. Python must be installed on Windows itself; Python inside WSL doesn't count.
+On Windows, use **PowerShell**, not WSL or Git Bash, and keep the folder on the Windows side (e.g. `C:\Users\<you>\hrms-attendance`), not inside WSL. `install.sh` is for macOS and Ubuntu, and it stops if it finds itself in WSL. Python must be installed on Windows itself; Python inside WSL doesn't count.
 
 The installer asks for:
 
@@ -62,7 +68,7 @@ It then tests your login without creating anything, and sets up the automatic jo
 - **Popups:**
   - **Success:** says the draft was created, with an **Open in HRMS** button to review and submit it.
   - **Failure:** explains what went wrong.
-- **Mac vs Windows:** both work the same way. On Windows you need to be logged in.
+- **Mac, Windows and Ubuntu:** all work the same way. On Windows and Ubuntu you need to be logged in to your desktop.
 
 ## Change your settings
 
@@ -72,7 +78,7 @@ You can also edit `.env` directly. Changes apply from the next run.
 
 ## Useful commands
 
-| | macOS | Windows |
+| | macOS and Ubuntu | Windows |
 |---|---|---|
 | Create today's draft now | `python3 attendance.py` | `python attendance.py` |
 | Preview only (creates nothing) | `python3 attendance.py --dry-run` | `python attendance.py --dry-run` |
@@ -93,7 +99,9 @@ The script can only file for **today**. It can't create requests for past or fut
 | Any other message from HRMS | It's a rule on your company's HRMS, such as a missing timesheet. Do what the message asks. The next check, within 15 minutes, creates the draft. |
 | `set HRMS_URL …` | Re-run the installer and enter your HRMS address. |
 | `No network … will retry on the next run` | Nothing to do: it tries again in 15 minutes. |
-| Nothing ran | **Mac:** run `launchctl list \| grep hrms` and check the job is listed. **Windows:** check **HRMS Attendance** in Task Scheduler. Re-running the installer fixes both. |
+| Nothing ran | **Mac:** run `launchctl list \| grep hrms` and check the job is listed. **Windows:** check **HRMS Attendance** in Task Scheduler. **Ubuntu:** run `systemctl --user list-timers hrms-attendance.timer` and check it's listed. Re-running the installer fixes all three. |
+| Ubuntu: nothing in `attendance.log` | Errors from before the script starts go to the system log: `journalctl --user -u hrms-attendance -n 20`. |
+| Ubuntu: `popup not shown: zenity is not installed` | Run `sudo apt install -y zenity`. |
 | Need to re-run today after deleting the draft | Delete the `.state.json` file in this folder, or run `attendance.py` by hand. |
 
 ## Files
@@ -101,7 +109,8 @@ The script can only file for **today**. It can't create requests for past or fut
 | File | Purpose |
 |---|---|
 | `attendance.py` | The script |
-| `install.sh` / `install.ps1` | Installers for macOS and Windows |
+| `install.sh` | Installer for macOS and Ubuntu |
+| `install.ps1` | Installer for Windows |
 | `.env` | Your settings, created by the installer. **Don't share this file.** |
 | `.env.example` | Reference for all settings, for manual setup |
 | `attendance.log` | What happened on each run |

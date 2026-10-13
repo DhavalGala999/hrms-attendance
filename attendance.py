@@ -4,7 +4,7 @@ Creates a daily draft Attendance Request in Frappe HRMS.
 
 Uses the Frappe REST API (no browser). Auth is either an API key/secret, or your
 username + password read from the OS credential store (macOS Keychain /
-Windows Credential Manager).
+Windows Credential Manager / the Linux desktop keyring).
 Safe to run multiple times a day: it skips weekends/holidays, days you're on
 leave, and days that already have an Attendance Request or Attendance.
 
@@ -25,6 +25,7 @@ import html
 import json
 import os
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -182,13 +183,14 @@ def frappe_error(raw: bytes) -> str:
 
 
 def stored_password() -> str:
-    """Password from the OS credential store: `keyring` if installed (Windows Credential
-    Manager / macOS Keychain / Linux Secret Service), else the macOS `security` tool."""
+    """Password from the OS credential store: the `keyring` package if it works here
+    (Windows Credential Manager), else the macOS `security` tool or, on Linux, `secret-tool`
+    (the desktop keyring)."""
     try:
         import keyring
         if pwd := keyring.get_password(KEYCHAIN_SERVICE, HRMS_USER):
             return pwd
-    except ImportError:
+    except Exception:  # not installed, or installed without a usable backend in this session
         pass
     if sys.platform == "darwin":
         result = subprocess.run(
@@ -198,6 +200,19 @@ def stored_password() -> str:
         if result.returncode == 0:
             return result.stdout.rstrip("\n")
         hint = f"security add-generic-password -s {KEYCHAIN_SERVICE} -a {HRMS_USER} -w"
+    elif sys.platform.startswith("linux"):
+        try:
+            # timeout: a locked keyring shows an unlock prompt and waits for it
+            result = subprocess.run(
+                ["secret-tool", "lookup", "service", KEYCHAIN_SERVICE, "username", HRMS_USER],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode == 0 and result.stdout:
+                return result.stdout.rstrip("\n")
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        hint = (f"secret-tool store --label='HRMS attendance' service {KEYCHAIN_SERVICE} "
+                f"username {HRMS_USER}  (needs: sudo apt install libsecret-tools)")
     else:
         hint = f"pip install keyring  then  python -m keyring set {KEYCHAIN_SERVICE} {HRMS_USER}"
     raise HRMSError(f"no saved password for {HRMS_USER} — save it with: {hint}")
@@ -368,15 +383,26 @@ def popup(title: str, body: str, url: str, error: bool = False) -> int | None:
         )
         return subprocess.Popen([sys.executable, "-c", code],
                                 creationflags=0x00000008 | 0x00000200).pid  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    if sys.platform.startswith("linux"):
+        if not shutil.which("zenity"):
+            log("popup not shown: zenity is not installed (sudo apt install zenity)")
+            return None
+        # zenity exits 0 for the --ok-label button, 1 for the other one, 5 on timeout.
+        # --no-markup: the text is plain, not Pango markup. POPUP_MARK becomes the shell's $0.
+        script = ('zenity --question --no-markup --width=420 --timeout=28800 --title="$1" --text="$2" '
+                  '--ok-label="Open in HRMS" --cancel-label="OK" && xdg-open "$3"')
+        return subprocess.Popen(["sh", "-c", script, POPUP_MARK, title, body, url], start_new_session=True,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).pid
     return None
 
 
 NO_WINDOW = 0x08000000  # Windows CREATE_NO_WINDOW: don't flash a console for helper commands
+POPUP_MARK = "hrms-attendance-popup"  # tags the Linux popup's shell process so we can recognise it
 
 
 def popup_open(pid: int | None) -> bool:
-    """Is the popup process we started earlier still on screen? (Also checks the process
-    name, so a recycled pid belonging to something else doesn't count.)"""
+    """Is the popup process we started earlier still on screen? (Also checks what the
+    process is, so a recycled pid belonging to something else doesn't count.)"""
     if not pid:
         return False
     try:
@@ -384,8 +410,11 @@ def popup_open(pid: int | None) -> bool:
             out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
                                  capture_output=True, text=True, creationflags=NO_WINDOW).stdout
             return "python" in out.lower()
-        out = subprocess.run(["ps", "-p", str(pid), "-o", "comm="], capture_output=True, text=True).stdout
-        return "osascript" in out
+        if sys.platform == "darwin":
+            out = subprocess.run(["ps", "-p", str(pid), "-o", "comm="], capture_output=True, text=True).stdout
+            return "osascript" in out
+        out = subprocess.run(["ps", "-ww", "-p", str(pid), "-o", "args="], capture_output=True, text=True).stdout
+        return POPUP_MARK in out
     except OSError:
         return False
 
@@ -398,7 +427,9 @@ def close_popup(pid: int | None) -> None:
         if sys.platform == "win32":
             subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, creationflags=NO_WINDOW)
         else:
-            os.kill(pid, signal.SIGTERM)
+            # The popup was started in its own session, so pid is also its process group:
+            # this ends the dialog and, on Linux, the shell that would open the browser.
+            os.killpg(pid, signal.SIGTERM)
     except OSError:
         pass
 
